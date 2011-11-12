@@ -69,4 +69,123 @@ CREATE FUNCTION ordered_cmp (ordered, ordered)
         END;
     $$;
 
+CREATE FUNCTION ordered_lt (ordered, ordered)
+    RETURNS boolean
+    IMMUTABLE STRICT
+    LANGUAGE sql
+    AS $$ SELECT ordered_cmp($1, $2) < 0 $$;
+
+CREATE FUNCTION ordered_le (ordered, ordered)
+    RETURNS boolean
+    IMMUTABLE STRICT
+    LANGUAGE sql
+    AS $$ SELECT ordered_cmp($1, $2) <= 0 $$;
+
+CREATE FUNCTION ordered_eq (ordered, ordered)
+    RETURNS boolean
+    IMMUTABLE STRICT
+    LANGUAGE sql
+    AS $$ SELECT ordered_cmp($1, $2) = 0 $$;
+
+CREATE FUNCTION ordered_ne (ordered, ordered)
+    RETURNS boolean
+    IMMUTABLE STRICT
+    LANGUAGE sql
+    AS $$ SELECT ordered_cmp($1, $2) <> 0 $$;
+
+CREATE FUNCTION ordered_ge (ordered, ordered)
+    RETURNS boolean
+    IMMUTABLE STRICT
+    LANGUAGE sql
+    AS $$ SELECT ordered_cmp($1, $2) >= 0 $$;
+
+CREATE FUNCTION ordered_gt (ordered, ordered)
+    RETURNS boolean
+    IMMUTABLE STRICT
+    LANGUAGE sql
+    AS $$ SELECT ordered_cmp($1, $2) > 0 $$;
+
+CREATE OPERATOR < (
+    leftarg     = ordered,
+    rightarg    = ordered,
+    procedure   = ordered_lt,
+    commutator  = >,
+    negator     = >=,
+    restrict    = scalarltsel,
+    join        = scalarltjoinsel
+);
+
+CREATE OPERATOR <= (
+    leftarg     = ordered,
+    rightarg    = ordered,
+    procedure   = ordered_le,
+    commutator  = >=,
+    negator     = >,
+    restrict    = scalarltsel,
+    join        = scalarltjoinsel
+);
+
+CREATE OPERATOR > (
+    leftarg     = ordered,
+    rightarg    = ordered,
+    procedure   = ordered_gt,
+    commutator  = <,
+    negator     = <=,
+    restrict    = scalargtsel,
+    join        = scalargtjoinsel
+);
+
+CREATE OPERATOR >= (
+    leftarg     = ordered,
+    rightarg    = ordered,
+    procedure   = ordered_ge,
+    commutator  = <=,
+    negator     = <,
+    restrict    = scalargtsel,
+    join        = scalargtjoinsel
+);
+
+CREATE OPERATOR = (
+    leftarg     = ordered,
+    rightarg    = ordered,
+    procedure   = ordered_eq,
+    commutator  = =,
+    negator     = <>,
+    restrict    = eqsel,
+    join        = eqjoinsel
+);
+
+CREATE OPERATOR <> (
+    leftarg     = ordered,
+    rightarg    = ordered,
+    procedure   = ordered_ne,
+    commutator  = <>,
+    negator     = =,
+    restrict    = neqsel,
+    join        = neqjoinsel
+);
+
+CREATE OPERATOR CLASS ordered_ops
+    DEFAULT FOR TYPE ordered USING btree AS
+        OPERATOR    1   <,
+        OPERATOR    2   <=,
+        OPERATOR    3   =,
+        OPERATOR    4   >=,
+        OPERATOR    5   >,
+        FUNCTION    1   ordered_cmp(ordered, ordered);
+
+GRANT USAGE ON SCHEMA ordered1 TO PUBLIC;
+GRANT EXECUTE 
+    ON FUNCTION 
+        before(ordered),
+        after(ordered),
+        ordered_cmp(ordered, ordered),
+        ordered_lt(ordered, ordered),
+        ordered_le(ordered, ordered),
+        ordered_ge(ordered, ordered),
+        ordered_gt(ordered, ordered),
+        ordered_eq(ordered, ordered),
+        ordered_ne(ordered, ordered)
+    TO PUBLIC;
+
 COMMIT;
