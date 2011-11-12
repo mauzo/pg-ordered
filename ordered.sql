@@ -51,7 +51,7 @@ CREATE FUNCTION ordered_cmp (ordered, ordered)
                 
                 CASE
                     WHEN ab = bb    THEN CONTINUE;
-                    WHEN bb = B'0'  THEN RETURN -1;
+                    WHEN ab = B'0'  THEN RETURN -1;
                     ELSE            RETURN 1;
                 END CASE;
             END LOOP;
@@ -59,9 +59,9 @@ CREATE FUNCTION ordered_cmp (ordered, ordered)
             CASE
                 WHEN la = lb THEN 
                     RETURN 0;
-                WHEN substring(vb from i for 1) = B'0' THEN
+                WHEN substring(vb from i for 1) = B'1' THEN
                     RETURN -1;
-                WHEN substring(va from i for 1) = B'1' THEN
+                WHEN substring(va from i for 1) = B'0' THEN
                     RETURN -1;
                 ELSE
                     RETURN 1;
