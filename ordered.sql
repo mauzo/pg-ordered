@@ -1,13 +1,100 @@
 BEGIN;
 
+-- Schema
+
 DROP SCHEMA IF EXISTS ordered1 CASCADE;
 CREATE SCHEMA ordered1;
 SET search_path TO ordered1;
+
+-- Data types
 
 CREATE TYPE ordered AS (
     rel     oid,
     ix      varbit
 );
+
+-- Utility functions
+
+CREATE FUNCTION do_execs (subst text[], cmds text[])
+    RETURNS void
+    VOLATILE
+    LANGUAGE plpgsql
+    AS $$
+        DECLARE
+            cmd     text;
+            i       integer;
+        BEGIN
+            FOR cmd IN SELECT unnest(cmds) LOOP
+                FOR i IN 1 .. array_length(subst, 1) BY 2 LOOP
+                    cmd := replace(cmd, subst[i], subst[i + 1]);
+                END LOOP;
+                RAISE NOTICE 'exec: [%]', cmd;
+                EXECUTE cmd;
+            END LOOP;
+        END;
+    $$;
+
+-- Subsidiary tables
+
+CREATE FUNCTION create_ordering (nm name)
+    RETURNS void
+    VOLATILE
+    -- *no* set search_path, since we are creating a table
+    LANGUAGE plpgsql
+    AS $fn$ 
+        BEGIN
+            PERFORM do_execs(
+                ARRAY[ '$tab$', nm ],
+                ARRAY[ $cr$ 
+                    CREATE TABLE $tab$ (
+                        rel     oid,
+                        att     int2,
+                        first   varbit,
+                        last    varbit
+                    ) 
+                $cr$, $ins$ 
+                    INSERT INTO $tab$ (first, last)
+                        VALUES (B'', B'') 
+                $ins$ ]
+            );
+        END;
+    $fn$;
+
+CREATE FUNCTION set_ordering_for (ord oid, rel oid, att int2)
+    RETURNS void
+    VOLATILE
+    SET search_path TO ordered1, pg_temp
+    SECURITY DEFINER
+    LANGUAGE plpgsql
+    AS $fn$
+        BEGIN
+            PERFORM do_execs(
+                ARRAY[
+                    '$ord$', ord::text,
+                    '$onm$', ord::regclass::text,
+                    '$rel$', rel::text,
+                    '$att$', att::text,
+                    '$cls$', 'pg_class'::regclass::oid::text
+                ],
+                ARRAY[
+                    $upd$ UPDATE $onm$ SET rel = $rel$, att = $att$ $upd$,
+                    $dep$
+                        INSERT INTO pg_depend (
+                            classid, objid, objsubid,
+                            refclassid, refobjid, refobjsubid,
+                            deptype
+                        ) VALUES (
+                            $cls$, $ord$, 0,
+                            $cls$, $rel$, $att$,
+                            'i'
+                        )
+                    $dep$
+                ]
+            );
+        END;
+    $fn$;
+
+-- Ordered values
 
 CREATE FUNCTION after (ordered)
     RETURNS ordered
@@ -23,6 +110,8 @@ CREATE FUNCTION before (ordered)
     AS $$
         SELECT ROW(($1).rel, ($1).ix || B'0')::ordered;
     $$;
+
+-- Index functions
 
 CREATE FUNCTION ordered_cmp (ordered, ordered)
     RETURNS integer
@@ -105,6 +194,8 @@ CREATE FUNCTION ordered_gt (ordered, ordered)
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) > 0 $$;
 
+-- Operators
+
 CREATE OPERATOR < (
     leftarg     = ordered,
     rightarg    = ordered,
@@ -173,6 +264,8 @@ CREATE OPERATOR CLASS ordered_ops
         OPERATOR    4   >=,
         OPERATOR    5   >,
         FUNCTION    1   ordered_cmp(ordered, ordered);
+
+-- Permissions
 
 GRANT USAGE ON SCHEMA ordered1 TO PUBLIC;
 GRANT EXECUTE 
