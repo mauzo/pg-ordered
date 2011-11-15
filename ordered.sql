@@ -34,6 +34,90 @@ CREATE FUNCTION do_execs (subst text[], cmds text[])
         END;
     $$;
 
+-- Trees
+
+CREATE FUNCTION create_tree (nm name)
+    RETURNS void
+    VOLATILE
+    LANGUAGE plpgsql
+    AS $fn$
+        BEGIN
+            PERFORM do_execs(
+                ARRAY[ '$tab$', nm ],
+                ARRAY[
+                    $cr$
+                        CREATE TABLE $tab$ (
+                            id      serial,
+                            parent  integer,
+                            first   boolean,
+                            
+                            PRIMARY KEY (id),
+                            FOREIGN KEY (parent)
+                                REFERENCES $tab$ (id)
+                                -- so we can manipulate the tree
+                                DEFERRABLE INITIALLY DEFERRED,
+                            UNIQUE (parent, first),
+                            CHECK (first IS NOT NULL OR parent IS NULL)
+                        )
+                    $cr$,
+                    -- ensure the tree only has one root
+                    $ix$
+                        CREATE UNIQUE INDEX $tab$_root_key
+                            ON $tab$ ((1))
+                            WHERE parent IS NULL
+                    $ix$
+                ]
+            );
+        END;
+    $fn$;
+
+CREATE FUNCTION ancestors (ord regclass, ix integer)
+    RETURNS TABLE ( id integer, depth integer, cmp integer )
+    STABLE STRICT
+    LANGUAGE plpgsql
+    AS $fn$
+        BEGIN
+            RETURN QUERY EXECUTE replace($an$
+                WITH RECURSIVE
+                    child ( id, parent, first, depth, cmp ) 
+                    AS (
+                        SELECT
+                            id, parent, first, 0, 0
+                            FROM $ord$
+                            WHERE id = $1
+                        UNION ALL
+                        SELECT
+                            o.id, o.parent, o.first, c.depth + 1,
+                            CASE WHEN c.first THEN -1 ELSE 1 END
+                        FROM child c
+                            JOIN $ord$ o
+                            ON o.id = c.parent
+                    )
+                SELECT id, depth, cmp FROM child
+            $an$, '$ord$', ord::text)
+            USING ix;
+
+            RETURN;
+        END;
+    $fn$;
+
+CREATE FUNCTION tree_cmp (ord regclass, a integer, b integer)
+    RETURNS integer
+    STABLE STRICT
+    LANGUAGE sql
+    AS $fn$
+        SELECT CASE
+            -- shortcircuit the simple case
+            WHEN $2 = $3 THEN 0
+            ELSE (
+                SELECT btint4cmp(a.cmp, b.cmp)
+                    FROM ancestors($1, $2) a
+                        JOIN ancestors($1, $3) b
+                        ON a.id = b.id
+            )
+        END
+    $fn$;
+
 -- Subsidiary tables
 
 CREATE FUNCTION create_ordering (nm name)
@@ -270,6 +354,10 @@ CREATE OPERATOR CLASS ordered_ops
 GRANT USAGE ON SCHEMA ordered1 TO PUBLIC;
 GRANT EXECUTE 
     ON FUNCTION 
+        create_tree(name),
+        ancestors(regclass, integer),
+        tree_cmp(regclass, integer, integer),
+
         before(ordered),
         after(ordered),
         ordered_cmp(ordered, ordered),
