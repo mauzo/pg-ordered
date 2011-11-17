@@ -10,7 +10,7 @@ SET search_path TO ordered1;
 
 CREATE TYPE ordered AS (
     rel     oid,
-    ix      varbit
+    id      integer
 );
 
 -- Utility functions
@@ -71,13 +71,15 @@ CREATE FUNCTION create_tree (nm name)
         END;
     $fn$;
 
-CREATE FUNCTION ancestors (ord regclass, ix integer)
+CREATE FUNCTION ancestors (o ordered)
     RETURNS TABLE ( id integer, depth integer, cmp integer )
     STABLE STRICT
     LANGUAGE plpgsql
     AS $fn$
+        DECLARE
+            q text;
         BEGIN
-            RETURN QUERY EXECUTE replace($an$
+            q := replace($an$
                 WITH RECURSIVE
                     child ( id, parent, first, depth, cmp ) 
                     AS (
@@ -87,162 +89,51 @@ CREATE FUNCTION ancestors (ord regclass, ix integer)
                             WHERE id = $1
                         UNION ALL
                         SELECT
-                            o.id, o.parent, o.first, c.depth + 1,
+                            p.id, p.parent, p.first, c.depth + 1,
                             CASE WHEN c.first THEN -1 ELSE 1 END
                         FROM child c
-                            JOIN $ord$ o
-                            ON o.id = c.parent
+                            JOIN $ord$ p
+                            ON p.id = c.parent
                     )
                 SELECT id, depth, cmp FROM child
-            $an$, '$ord$', ord::text)
-            USING ix;
+            $an$, '$ord$', (o).rel::regclass::text);
+            --RAISE NOTICE 'SQL: %', q;
+            RETURN QUERY EXECUTE q USING o.id;
 
             RETURN;
         END;
     $fn$;
 
-CREATE FUNCTION tree_cmp (ord regclass, a integer, b integer)
+CREATE FUNCTION ordered_cmp (a ordered, b ordered)
     RETURNS integer
     STABLE STRICT
-    LANGUAGE sql
-    AS $fn$
-        SELECT CASE
-            -- shortcircuit the simple case
-            WHEN $2 = $3 THEN 0
-            ELSE (
-                SELECT btint4cmp(a.cmp, b.cmp)
-                    FROM ancestors($1, $2) a
-                        JOIN ancestors($1, $3) b
-                        ON a.id = b.id
-                    ORDER BY a.depth
-                    LIMIT 1
-            )
-        END
-    $fn$;
-
--- Subsidiary tables
-
-CREATE FUNCTION create_ordering (nm name)
-    RETURNS void
-    VOLATILE
-    -- *no* set search_path, since we are creating a table
-    LANGUAGE plpgsql
-    AS $fn$ 
-        BEGIN
-            PERFORM do_execs(
-                ARRAY[ '$tab$', nm ],
-                ARRAY[ $cr$ 
-                    CREATE TABLE $tab$ (
-                        rel     oid,
-                        att     int2,
-                        first   varbit,
-                        last    varbit
-                    ) 
-                $cr$, $ins$ 
-                    INSERT INTO $tab$ (first, last)
-                        VALUES (B'', B'') 
-                $ins$ ]
-            );
-        END;
-    $fn$;
-
-CREATE FUNCTION set_ordering_for (ord oid, rel oid, att int2)
-    RETURNS void
-    VOLATILE
-    SET search_path TO ordered1, pg_temp
-    SECURITY DEFINER
     LANGUAGE plpgsql
     AS $fn$
+        DECLARE
+            rv integer;
         BEGIN
-            PERFORM do_execs(
-                ARRAY[
-                    '$ord$', ord::text,
-                    '$onm$', ord::regclass::text,
-                    '$rel$', rel::text,
-                    '$att$', att::text,
-                    '$cls$', 'pg_class'::regclass::oid::text
-                ],
-                ARRAY[
-                    $upd$ UPDATE $onm$ SET rel = $rel$, att = $att$ $upd$,
-                    $dep$
-                        INSERT INTO pg_depend (
-                            classid, objid, objsubid,
-                            refclassid, refobjid, refobjsubid,
-                            deptype
-                        ) VALUES (
-                            $cls$, $ord$, 0,
-                            $cls$, $rel$, $att$,
-                            'i'
-                        )
-                    $dep$
-                ]
-            );
+            IF (a).rel <> (b).rel THEN
+                RAISE 'can''t compare ordered values from different orderings';
+            END IF;
+
+            IF (a).id = (b).id THEN
+                RETURN 0;
+            END IF;
+
+            SELECT 
+                btint4cmp(aa.cmp, ba.cmp)
+                FROM ancestors(a) aa
+                    JOIN ancestors(b) ba
+                    ON aa.id = ba.id
+                ORDER BY aa.depth
+                LIMIT 1
+                INTO rv;
+
+            RETURN rv;
         END;
     $fn$;
-
--- Ordered values
-
-CREATE FUNCTION after (ordered)
-    RETURNS ordered
-    LANGUAGE sql
-    AS $$
-        SELECT ROW(($1).rel, ($1).ix || B'1')::ordered;
-    $$;
-
-CREATE FUNCTION before (ordered)
-    RETURNS ordered
-    SET search_path FROM CURRENT
-    LANGUAGE sql
-    AS $$
-        SELECT ROW(($1).rel, ($1).ix || B'0')::ordered;
-    $$;
 
 -- Index functions
-
-CREATE FUNCTION ordered_cmp (ordered, ordered)
-    RETURNS integer
-    IMMUTABLE STRICT
-    SET search_path FROM CURRENT
-    LANGUAGE plpgsql
-    AS $$
-        -- It should be possible to optimize this, starting with
-        -- position(B'1' in (va # vb)), but go with the simple
-        -- implementation for now.
-        DECLARE
-            i integer   := 1;
-            va varbit   := ($1).ix;
-            vb varbit   := ($2).ix;
-            la integer  := length(va);
-            lb integer  := length(vb);
-            ab bit;
-            bb bit;
-        BEGIN
-            WHILE i <= la AND i <= lb LOOP
-                ab := substring(va from i for 1);
-                bb := substring(vb from i for 1);
-
-                -- inc before testing
-                i := i + 1;
-                
-                CASE
-                    WHEN ab = bb    THEN CONTINUE;
-                    WHEN ab = B'0'  THEN RETURN -1;
-                    ELSE            RETURN 1;
-                END CASE;
-            END LOOP;
-
-            CASE
-                WHEN la = lb THEN 
-                    RETURN 0;
-                WHEN substring(vb from i for 1) = B'1' THEN
-                    RETURN -1;
-                WHEN substring(va from i for 1) = B'0' THEN
-                    RETURN -1;
-                ELSE
-                    RETURN 1;
-            END CASE;
-        END;
-    $$;
 
 CREATE FUNCTION ordered_lt (ordered, ordered)
     RETURNS boolean
@@ -351,17 +242,68 @@ CREATE OPERATOR CLASS ordered_ops
         OPERATOR    5   >,
         FUNCTION    1   ordered_cmp(ordered, ordered);
 
+--CREATE FUNCTION set_ordering_for (ord oid, rel oid, att int2)
+--    RETURNS void
+--    VOLATILE
+--    SET search_path TO ordered1, pg_temp
+--    SECURITY DEFINER
+--    LANGUAGE plpgsql
+--    AS $fn$
+--        BEGIN
+--            PERFORM do_execs(
+--                ARRAY[
+--                    '$ord$', ord::text,
+--                    '$onm$', ord::regclass::text,
+--                    '$rel$', rel::text,
+--                    '$att$', att::text,
+--                    '$cls$', 'pg_class'::regclass::oid::text
+--                ],
+--                ARRAY[
+--                    $upd$ UPDATE $onm$ SET rel = $rel$, att = $att$ $upd$,
+--                    $dep$
+--                        INSERT INTO pg_depend (
+--                            classid, objid, objsubid,
+--                            refclassid, refobjid, refobjsubid,
+--                            deptype
+--                        ) VALUES (
+--                            $cls$, $ord$, 0,
+--                            $cls$, $rel$, $att$,
+--                            'i'
+--                        )
+--                    $dep$
+--                ]
+--            );
+--        END;
+--    $fn$;
+
+-- Ordered values
+
+--CREATE FUNCTION after (ordered)
+--    RETURNS ordered
+--    LANGUAGE sql
+--    AS $$
+--        SELECT ROW(($1).rel, ($1).ix || B'1')::ordered;
+--    $$;
+--
+--CREATE FUNCTION before (ordered)
+--    RETURNS ordered
+--    SET search_path FROM CURRENT
+--    LANGUAGE sql
+--    AS $$
+--        SELECT ROW(($1).rel, ($1).ix || B'0')::ordered;
+--    $$;
+
 -- Permissions
 
 GRANT USAGE ON SCHEMA ordered1 TO PUBLIC;
 GRANT EXECUTE 
     ON FUNCTION 
         create_tree(name),
-        ancestors(regclass, integer),
-        tree_cmp(regclass, integer, integer),
 
-        before(ordered),
-        after(ordered),
+        --before(ordered),
+        --after(ordered),
+
+        ancestors(ordered),
         ordered_cmp(ordered, ordered),
         ordered_lt(ordered, ordered),
         ordered_le(ordered, ordered),
