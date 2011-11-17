@@ -36,7 +36,7 @@ CREATE FUNCTION do_execs (subst text[], cmds text[])
 
 -- Trees
 
-CREATE FUNCTION create_tree (nm name)
+CREATE FUNCTION create_ordering (nm name)
     RETURNS void
     VOLATILE
     LANGUAGE plpgsql
@@ -68,6 +68,36 @@ CREATE FUNCTION create_tree (nm name)
                     $ix$
                 ]
             );
+        END;
+    $fn$;
+
+CREATE FUNCTION _set_ordering_for (ord oid, rel oid, att int2)
+    RETURNS void
+    VOLATILE
+    SET search_path TO ordered1, pg_temp
+    SECURITY DEFINER
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            cls oid := 'pg_class'::regclass::oid;
+        BEGIN
+            DELETE FROM pg_depend
+                WHERE classid = cls AND objid = ord
+                    -- the schema at least has a 'n' dep on us
+                    -- don't delete it by mistake
+                    AND refclassid = cls AND deptype = 'a';
+
+            IF rel IS NOT NULL THEN
+                INSERT INTO pg_depend (
+                    classid, objid, objsubid,
+                    refclassid, refobjid, refobjsubid,
+                    deptype
+                ) VALUES (
+                    cls, ord, 0,
+                    cls, rel, att,
+                    'a'
+                );
+            END IF;
         END;
     $fn$;
 
@@ -104,6 +134,8 @@ CREATE FUNCTION ancestors (o ordered)
         END;
     $fn$;
 
+-- Index functions
+
 CREATE FUNCTION ordered_cmp (a ordered, b ordered)
     RETURNS integer
     STABLE STRICT
@@ -132,8 +164,6 @@ CREATE FUNCTION ordered_cmp (a ordered, b ordered)
             RETURN rv;
         END;
     $fn$;
-
--- Index functions
 
 CREATE FUNCTION ordered_lt (ordered, ordered)
     RETURNS boolean
@@ -242,39 +272,6 @@ CREATE OPERATOR CLASS ordered_ops
         OPERATOR    5   >,
         FUNCTION    1   ordered_cmp(ordered, ordered);
 
---CREATE FUNCTION set_ordering_for (ord oid, rel oid, att int2)
---    RETURNS void
---    VOLATILE
---    SET search_path TO ordered1, pg_temp
---    SECURITY DEFINER
---    LANGUAGE plpgsql
---    AS $fn$
---        BEGIN
---            PERFORM do_execs(
---                ARRAY[
---                    '$ord$', ord::text,
---                    '$onm$', ord::regclass::text,
---                    '$rel$', rel::text,
---                    '$att$', att::text,
---                    '$cls$', 'pg_class'::regclass::oid::text
---                ],
---                ARRAY[
---                    $upd$ UPDATE $onm$ SET rel = $rel$, att = $att$ $upd$,
---                    $dep$
---                        INSERT INTO pg_depend (
---                            classid, objid, objsubid,
---                            refclassid, refobjid, refobjsubid,
---                            deptype
---                        ) VALUES (
---                            $cls$, $ord$, 0,
---                            $cls$, $rel$, $att$,
---                            'i'
---                        )
---                    $dep$
---                ]
---            );
---        END;
---    $fn$;
 
 -- Ordered values
 
@@ -298,7 +295,8 @@ CREATE OPERATOR CLASS ordered_ops
 GRANT USAGE ON SCHEMA ordered1 TO PUBLIC;
 GRANT EXECUTE 
     ON FUNCTION 
-        create_tree(name),
+        create_ordering(name),
+        _set_ordering_for(oid, oid, int2),
 
         --before(ordered),
         --after(ordered),
