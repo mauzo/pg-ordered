@@ -114,6 +114,8 @@ CREATE FUNCTION tree_cmp (ord regclass, a integer, b integer)
                     FROM ancestors($1, $2) a
                         JOIN ancestors($1, $3) b
                         ON a.id = b.id
+                    ORDER BY a.depth
+                    LIMIT 1
             )
         END
     $fn$;
