@@ -83,14 +83,39 @@ CREATE FUNCTION _set_ordering_for (ord oid, rel oid, att int2)
     LANGUAGE plpgsql
     AS $fn$
         DECLARE
-            cls oid := 'pg_class'::regclass::oid;
+            ordown  oid;
+            relown  oid;
+            cls     oid     := 'pg_class'::regclass::oid;
         BEGIN
+            SELECT relowner INTO ordown FROM pg_class WHERE oid = ord;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'relation % does not exist', ord;
+            END IF;
+
+            IF NOT pg_has_role(session_user, ordown, 'MEMBER') THEN
+                RAISE EXCEPTION 'must be owner of relation %',
+                    ord::regclass;
+            END IF;
+
+            IF rel IS NOT NULL THEN
+                SELECT relowner INTO relown FROM pg_class WHERE oid = rel;
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'relation % does not exist', rel;
+                END IF;
+
+                IF relown <> ordown THEN
+                    RAISE EXCEPTION 
+                        'ordering must have same owner as table '
+                        'it is linked to';
+                END IF;
+            END IF;
+
             DELETE FROM pg_depend
                 WHERE classid = cls AND objid = ord
                     -- the schema at least has a 'n' dep on us
                     -- don't delete it by mistake
                     AND refclassid = cls AND deptype = 'a';
-
+    
             IF rel IS NOT NULL THEN
                 INSERT INTO pg_depend (
                     classid, objid, objsubid,
