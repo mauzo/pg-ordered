@@ -28,7 +28,7 @@ CREATE FUNCTION do_execs (subst text[], cmds text[])
                 FOR i IN 1 .. array_length(subst, 1) BY 2 LOOP
                     cmd := replace(cmd, subst[i], subst[i + 1]);
                 END LOOP;
-                RAISE NOTICE 'exec: [%]', cmd;
+                --RAISE NOTICE 'exec: [%]', cmd;
                 EXECUTE cmd;
             END LOOP;
         END;
