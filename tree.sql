@@ -9,7 +9,7 @@
 --
 
 CREATE FUNCTION create_ordering (rel name, nsp name DEFAULT current_schema)
-    RETURNS void
+    RETURNS oid
     VOLATILE
     SET search_path FROM CURRENT
     LANGUAGE plpgsql
@@ -17,12 +17,13 @@ CREATE FUNCTION create_ordering (rel name, nsp name DEFAULT current_schema)
         DECLARE
             qnsp text := quote_ident(nsp);
             qrel text := quote_ident(rel);
+            qual text := qnsp || '.' || qrel;
         BEGIN
             PERFORM do_execs(
                 ARRAY[ 
                     '$rel$',    qrel,
                     '$nsp$',    qnsp,
-                    '$qual$',   qnsp || '.' || qrel
+                    '$qual$',   qual
                 ],
                 ARRAY[
                     $cr$
@@ -48,6 +49,8 @@ CREATE FUNCTION create_ordering (rel name, nsp name DEFAULT current_schema)
                     $ix$
                 ]
             );
+
+            RETURN qual::regclass::oid;
         END;
     $fn$;
 
