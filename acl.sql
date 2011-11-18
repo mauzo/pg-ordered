@@ -14,12 +14,16 @@ SET search_path TO ordered1;
 GRANT USAGE ON SCHEMA ordered1 TO PUBLIC;
 GRANT EXECUTE 
     ON FUNCTION 
+        -- tree.sql
+        _verify_att(pg_attribute),
         create_ordering(name, name),
         _set_ordering_for(oid, oid, int2),
 
+        -- value.sql
         --before(ordered),
         --after(ordered),
 
+        -- op.sql
         ancestors(ordered),
         ordered_cmp(ordered, ordered),
         ordered_lt(ordered, ordered),

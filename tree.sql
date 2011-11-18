@@ -51,6 +51,32 @@ CREATE FUNCTION create_ordering (rel name, nsp name DEFAULT current_schema)
         END;
     $fn$;
 
+CREATE FUNCTION _verify_att (a pg_attribute)
+    RETURNS int2
+    STABLE
+    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            rel text := (a).attrelid::regclass;
+        BEGIN
+            IF (a).attnum <= 0 THEN
+                RAISE EXCEPTION 'column number must be positive';
+            END IF;
+            IF (a).attisdropped THEN
+                RAISE EXCEPTION 'column % of "%" has been dropped',
+                    (a).attnum, rel;
+            END IF;
+            IF (a).atttypid <> 'ordered'::regtype THEN
+                RAISE EXCEPTION
+                    'column "%" of "%" is not of type "ordered"',
+                    (a).attname, rel;
+            END IF;
+
+            RETURN (a).attnum;
+        END;
+    $fn$;
+
 CREATE FUNCTION _set_ordering_for (ord oid, rel oid, att int2)
     RETURNS void
     VOLATILE
@@ -83,6 +109,14 @@ CREATE FUNCTION _set_ordering_for (ord oid, rel oid, att int2)
                     RAISE EXCEPTION 
                         'ordering must have same owner as table '
                         'it is linked to';
+                END IF;
+
+                PERFORM _verify_att(a) FROM pg_attribute a
+                    WHERE attrelid = rel AND attnum = att;
+
+                IF NOT FOUND THEN
+                    RAISE EXCEPTION 'column % of "%" does not exist',
+                        att, rel::regclass;
                 END IF;
             END IF;
 
