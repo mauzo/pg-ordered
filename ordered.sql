@@ -24,6 +24,7 @@ CREATE FUNCTION do_execs (subst text[], cmds text[])
             cmd     text;
             i       integer;
         BEGIN
+            -- XXX is it worth qualifying these functions?
             FOR cmd IN SELECT unnest(cmds) LOOP
                 FOR i IN 1 .. array_length(subst, 1) BY 2 LOOP
                     cmd := replace(cmd, subst[i], subst[i + 1]);
@@ -42,7 +43,10 @@ CREATE FUNCTION create_ordering (nm name)
     LANGUAGE plpgsql
     AS $fn$
         BEGIN
-            PERFORM do_execs(
+            -- We can't SET search_path since that will create objects in
+            -- the wrong schema. That means explicitly qualifying
+            -- everything (fortunately there isn't much to qualify).
+            PERFORM ordered1.do_execs(
                 ARRAY[ '$tab$', nm ],
                 ARRAY[
                     $cr$
@@ -104,6 +108,7 @@ CREATE FUNCTION _set_ordering_for (ord oid, rel oid, att int2)
 CREATE FUNCTION ancestors (o ordered)
     RETURNS TABLE ( id integer, depth integer, cmp integer )
     STABLE STRICT
+    SET search_path FROM CURRENT
     LANGUAGE plpgsql
     AS $fn$
         DECLARE
@@ -139,6 +144,7 @@ CREATE FUNCTION ancestors (o ordered)
 CREATE FUNCTION ordered_cmp (a ordered, b ordered)
     RETURNS integer
     STABLE STRICT
+    SET search_path FROM CURRENT
     LANGUAGE plpgsql
     AS $fn$
         DECLARE
@@ -168,36 +174,42 @@ CREATE FUNCTION ordered_cmp (a ordered, b ordered)
 CREATE FUNCTION ordered_lt (ordered, ordered)
     RETURNS boolean
     IMMUTABLE STRICT
+    SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) < 0 $$;
 
 CREATE FUNCTION ordered_le (ordered, ordered)
     RETURNS boolean
     IMMUTABLE STRICT
+    SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) <= 0 $$;
 
 CREATE FUNCTION ordered_eq (ordered, ordered)
     RETURNS boolean
     IMMUTABLE STRICT
+    SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) = 0 $$;
 
 CREATE FUNCTION ordered_ne (ordered, ordered)
     RETURNS boolean
     IMMUTABLE STRICT
+    SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) <> 0 $$;
 
 CREATE FUNCTION ordered_ge (ordered, ordered)
     RETURNS boolean
     IMMUTABLE STRICT
+    SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) >= 0 $$;
 
 CREATE FUNCTION ordered_gt (ordered, ordered)
     RETURNS boolean
     IMMUTABLE STRICT
+    SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) > 0 $$;
 
