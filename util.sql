@@ -11,13 +11,13 @@
 CREATE FUNCTION do_execs (subst text[], cmds text[])
     RETURNS void
     VOLATILE
+    SET search_path FROM CURRENT
     LANGUAGE plpgsql
     AS $$
         DECLARE
             cmd     text;
             i       integer;
         BEGIN
-            -- XXX is it worth qualifying these functions?
             FOR cmd IN SELECT unnest(cmds) LOOP
                 FOR i IN 1 .. array_length(subst, 1) BY 2 LOOP
                     cmd := replace(cmd, subst[i], subst[i + 1]);

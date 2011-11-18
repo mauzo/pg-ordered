@@ -8,27 +8,32 @@
 -- Released under the 2-clause BSD licence.
 --
 
-CREATE FUNCTION create_ordering (nm name)
+CREATE FUNCTION create_ordering (rel name, nsp name DEFAULT current_schema)
     RETURNS void
     VOLATILE
+    SET search_path FROM CURRENT
     LANGUAGE plpgsql
     AS $fn$
+        DECLARE
+            qnsp text := quote_ident(nsp);
+            qrel text := quote_ident(rel);
         BEGIN
-            -- We can't SET search_path since that will create objects in
-            -- the wrong schema. That means explicitly qualifying
-            -- everything (fortunately there isn't much to qualify).
-            PERFORM ordered1.do_execs(
-                ARRAY[ '$tab$', nm ],
+            PERFORM do_execs(
+                ARRAY[ 
+                    '$rel$',    qrel,
+                    '$nsp$',    qnsp,
+                    '$qual$',   qnsp || '.' || qrel
+                ],
                 ARRAY[
                     $cr$
-                        CREATE TABLE $tab$ (
+                        CREATE TABLE $qual$ (
                             id      serial,
                             parent  integer,
                             first   boolean,
                             
                             PRIMARY KEY (id),
-                            FOREIGN KEY (parent)
-                                REFERENCES $tab$ (id)
+                            FOREIGN KEY (parent) 
+                                REFERENCES $qual$ (id)
                                 -- so we can manipulate the tree
                                 DEFERRABLE INITIALLY DEFERRED,
                             UNIQUE (parent, first),
@@ -37,8 +42,8 @@ CREATE FUNCTION create_ordering (nm name)
                     $cr$,
                     -- ensure the tree only has one root
                     $ix$
-                        CREATE UNIQUE INDEX $tab$_root_key
-                            ON $tab$ ((1))
+                        CREATE UNIQUE INDEX $rel$_root_key
+                            ON $qual$ ((1))
                             WHERE parent IS NULL
                     $ix$
                 ]

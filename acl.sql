@@ -14,7 +14,7 @@ SET search_path TO ordered1;
 GRANT USAGE ON SCHEMA ordered1 TO PUBLIC;
 GRANT EXECUTE 
     ON FUNCTION 
-        create_ordering(name),
+        create_ordering(name, name),
         _set_ordering_for(oid, oid, int2),
 
         --before(ordered),
