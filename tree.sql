@@ -98,7 +98,7 @@ CREATE FUNCTION _set_ordering_for (ord oid, rel oid, att int2)
             END IF;
 
             IF NOT pg_has_role(session_user, ordown, 'MEMBER') THEN
-                RAISE EXCEPTION 'must be owner of relation %',
+                RAISE EXCEPTION 'must be owner of relation "%"',
                     ord::regclass;
             END IF;
 
@@ -143,3 +143,36 @@ CREATE FUNCTION _set_ordering_for (ord oid, rel oid, att int2)
         END;
     $fn$;
 
+CREATE FUNCTION create_ordering_for (rel regclass, att name)
+    RETURNS oid
+    VOLATILE
+    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            nsp     name;
+            rel_nm  name;
+            ord_nm  name;
+            ord_oid oid;
+            att_num int2;
+        BEGIN
+            SELECT _verify_att(a), r.relname, n.nspname
+                INTO att_num, rel_nm, nsp
+                FROM pg_attribute a
+                    JOIN pg_class r ON a.attrelid = r.oid
+                    JOIN pg_namespace n ON r.relnamespace = n.oid
+                WHERE r.oid = rel AND a.attname = att;
+            
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'column "%" of "%" does not exist',
+                    att, rel;
+            END IF;
+
+            ord_nm := rel_nm || '_' || att || '_ord';
+
+            SELECT create_ordering(ord_nm, nsp) INTO ord_oid;
+            PERFORM _set_ordering_for(ord_oid, rel, att_num);
+
+            RETURN ord_oid;
+        END;
+    $fn$;

@@ -18,6 +18,7 @@ GRANT EXECUTE
         _verify_att(pg_attribute),
         create_ordering(name, name),
         _set_ordering_for(oid, oid, int2),
+        create_ordering_for(regclass, name),
 
         -- value.sql
         --before(ordered),
