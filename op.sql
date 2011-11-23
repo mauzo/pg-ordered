@@ -8,9 +8,15 @@
 -- Released under the 2-clause BSD licence.
 --
 
+-- These functions all need to be VOLATILE, otherwise they don't see
+-- records in the ordering table that have been inserted since the
+-- beginning of the statement. This means direct comparisons with the
+-- results of before() and after() (including the comparisons performed
+-- by an index) return NULL, which is Bad.
+
 CREATE FUNCTION ancestors (o ordered)
     RETURNS TABLE ( id integer, depth integer, cmp integer )
-    STABLE STRICT
+    VOLATILE STRICT
     SET search_path FROM CURRENT
     LANGUAGE plpgsql
     AS $fn$
@@ -44,7 +50,7 @@ CREATE FUNCTION ancestors (o ordered)
 
 CREATE FUNCTION ordered_cmp (a ordered, b ordered)
     RETURNS integer
-    STABLE STRICT
+    VOLATILE STRICT
     SET search_path FROM CURRENT
     LANGUAGE plpgsql
     AS $fn$
@@ -76,42 +82,42 @@ CREATE FUNCTION ordered_cmp (a ordered, b ordered)
 
 CREATE FUNCTION ordered_lt (ordered, ordered)
     RETURNS boolean
-    IMMUTABLE STRICT
+    VOLATILE STRICT
     SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) < 0 $$;
 
 CREATE FUNCTION ordered_le (ordered, ordered)
     RETURNS boolean
-    IMMUTABLE STRICT
+    VOLATILE STRICT
     SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) <= 0 $$;
 
 CREATE FUNCTION ordered_eq (ordered, ordered)
     RETURNS boolean
-    IMMUTABLE STRICT
+    VOLATILE STRICT
     SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) = 0 $$;
 
 CREATE FUNCTION ordered_ne (ordered, ordered)
     RETURNS boolean
-    IMMUTABLE STRICT
+    VOLATILE STRICT
     SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) <> 0 $$;
 
 CREATE FUNCTION ordered_ge (ordered, ordered)
     RETURNS boolean
-    IMMUTABLE STRICT
+    VOLATILE STRICT
     SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) >= 0 $$;
 
 CREATE FUNCTION ordered_gt (ordered, ordered)
     RETURNS boolean
-    IMMUTABLE STRICT
+    VOLATILE STRICT
     SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT ordered_cmp($1, $2) > 0 $$;
