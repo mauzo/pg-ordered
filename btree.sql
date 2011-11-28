@@ -197,6 +197,8 @@ CREATE FUNCTION delete(k integer) RETURNS void
                 IF n.nk < 4 THEN
                     n := underflow(n);
                 END IF;
+
+                PERFORM update(n);
             ELSE
                 c := last_child(n.ds[n.ix])::btree_x;
                 RAISE NOTICE 'last child: % (%)', c.id, c.ks[c.nk];
@@ -205,14 +207,16 @@ CREATE FUNCTION delete(k integer) RETURNS void
                 c.ks        := c.ks[1:c.nk - 1];
                 c := reset(c);
 
+                -- we need to update n before we underflow c as c may
+                -- recurse back up to n
+                PERFORM update(n);
+
                 IF c.nk < 4 THEN
                     c := underflow(c);
                 END IF;
 
                 PERFORM update(c);
             END IF;
-
-            PERFORM update(n);
         END;
     $$;
 
