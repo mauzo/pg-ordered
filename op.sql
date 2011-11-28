@@ -18,6 +18,12 @@ CREATE FUNCTION ancestors (o ordered)
     RETURNS TABLE ( id integer, depth integer, cmp integer )
     VOLATILE STRICT
     SET search_path FROM CURRENT
+    -- The planner seems to plan this recursive with rather badly. The
+    -- query ends up doing lots of joins, each of which joins in one
+    -- other record, so it should use indexes; but the planner assumes
+    -- each join will join in lots of records so it uses seq scans
+    -- instead.
+    SET enable_seqscan TO off
     LANGUAGE plpgsql
     AS $fn$
         DECLARE
