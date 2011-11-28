@@ -32,12 +32,23 @@ CREATE TYPE btree_x AS (
 
 -- btree_x functions
 
-CREATE FUNCTION expand(btree) RETURNS btree_x
+CREATE FUNCTION btree_x(btree) RETURNS btree_x
     LANGUAGE sql IMMUTABLE
     AS $fn$
         SELECT $1.id, coalesce(array_length($1.keys, 1), 0), $1.keys,
             array_length($1.kids, 1), $1.kids, NULL::integer;
     $fn$;
+CREATE CAST (btree AS btree_x)
+    WITH FUNCTION btree_x (btree)
+    AS ASSIGNMENT;
+
+CREATE FUNCTION btree(btree_x) RETURNS btree
+    LANGUAGE sql IMMUTABLE
+    AS $fn$ 
+        SELECT $1.id, $1.ds, $1.ks;
+    $fn$;
+CREATE CAST (btree_x AS btree)
+    WITH FUNCTION btree (btree_x);
 
 CREATE FUNCTION reset(btree_x) RETURNS btree_x
     LANGUAGE sql IMMUTABLE
@@ -61,12 +72,6 @@ CREATE FUNCTION update(n btree_x) RETURNS void
 
 -- array functions
 
-CREATE FUNCTION splice(integer[], integer[], integer) RETURNS integer[]
-    LANGUAGE sql IMMUTABLE
-    AS $fn$ 
-        SELECT $1[1:$3-1] || $2 || $1[$3+1:array_length($1, 1)];
-    $fn$;
-
 CREATE FUNCTION ix(anyarray, anyelement) RETURNS integer
     LANGUAGE sql IMMUTABLE
     AS $fn$
@@ -84,7 +89,8 @@ CREATE FUNCTION underflow(INOUT n btree_x)
             p   btree_x;
             s   btree_x;
         BEGIN
-            p := expand(b) FROM btree b WHERE ARRAY[n.id] <@ kids;
+            p := b::btree_x FROM btree b 
+                WHERE ARRAY[n.id] <@ kids;
 
             IF p IS NULL THEN
                 -- The root is allowed to underflow. If it empties
@@ -98,7 +104,7 @@ CREATE FUNCTION underflow(INOUT n btree_x)
             << switch >>
             BEGIN
                 IF p.ix > 1 THEN
-                    s := expand(b) FROM btree b
+                    s := b::btree_x FROM btree b
                         WHERE id = p.ds[p.ix - 1];
 
                     IF s.nk > 4 THEN
@@ -116,7 +122,7 @@ CREATE FUNCTION underflow(INOUT n btree_x)
                 END IF;
 
                 IF p.ix < p.nd THEN
-                    s := expand(b) FROM btree b
+                    s := b::btree_x FROM btree b
                         WHERE id = p.ds[p.ix + 1];
 
                     IF s.nk > 4 THEN
@@ -175,7 +181,7 @@ CREATE FUNCTION delete(k integer) RETURNS void
             i       integer;
             l       integer;
         BEGIN
-            n := expand(b) FROM btree b WHERE ARRAY[k] <@ keys;
+            n := b::btree_x FROM btree b WHERE ARRAY[k] <@ keys;
             IF n IS NULL THEN
                 RAISE 'not in btree: %', k;
             END IF;
@@ -192,7 +198,7 @@ CREATE FUNCTION delete(k integer) RETURNS void
                     n := underflow(n);
                 END IF;
             ELSE
-                c := expand(last_child(n.ds[n.ix]));
+                c := last_child(n.ds[n.ix])::btree_x;
                 RAISE NOTICE 'last child: % (%)', c.id, c.ks[c.nk];
 
                 n.ks[n.ix]  := c.ks[c.nk];
@@ -278,42 +284,6 @@ CREATE FUNCTION insert(
 
 -- search
 
-CREATE FUNCTION first_child(btree_x) RETURNS btree_x
-    LANGUAGE sql
-    AS $fn$
-        WITH RECURSIVE
-            parent (bt, kids, depth) AS (
-                SELECT b, b.kids, 0::integer
-                    FROM btree b
-                    WHERE b.id = $1.id
-                UNION ALL
-                SELECT c, c.kids, p.depth + 1
-                    FROM parent p
-                        JOIN btree c
-                            ON c.id = p.kids[1]
-            )
-            SELECT expand(bt) FROM parent 
-                ORDER BY depth DESC LIMIT 1
-    $fn$;
-
-CREATE FUNCTION last_child(btree_x) RETURNS btree_x
-    LANGUAGE sql
-    AS $fn$
-        WITH RECURSIVE
-            parent (bt, kids, depth) AS (
-                SELECT b, b.kids, 0::integer
-                    FROM btree b
-                    WHERE b.id = $1.id
-                UNION ALL
-                SELECT c, c.kids, p.depth + 1
-                    FROM parent p
-                        JOIN btree c
-                            ON c.id = p.kids[array_length(p.kids, 1)]
-            )
-            SELECT expand(bt) FROM parent 
-                ORDER BY depth DESC LIMIT 1
-    $fn$;
-
 CREATE FUNCTION last_child(integer) RETURNS btree
     LANGUAGE sql
     AS $fn$
@@ -330,21 +300,4 @@ CREATE FUNCTION last_child(integer) RETURNS btree
             )
             SELECT bt FROM parent 
                 ORDER BY depth DESC LIMIT 1
-    $fn$;
-
-CREATE FUNCTION last_children(btree_x) RETURNS SETOF btree_x
-    LANGUAGE sql
-    AS $fn$
-        WITH RECURSIVE
-            parent (bt, kids, depth) AS (
-                SELECT b, b.kids, 0::integer
-                    FROM btree b
-                    WHERE b.id = $1.id
-                UNION ALL
-                SELECT c, c.kids, p.depth + 1
-                    FROM parent p
-                        JOIN btree c
-                            ON c.id = p.kids[array_length(p.kids, 1)]
-            )
-            SELECT expand(bt) FROM parent
     $fn$;
