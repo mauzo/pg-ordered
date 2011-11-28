@@ -28,6 +28,7 @@ CREATE TYPE ordered AS (
 -- Include the other sql files
 
 \i util.sql
+\i btree.sql
 \i tree.sql
 \i op.sql
 \i value.sql
