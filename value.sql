@@ -126,3 +126,116 @@ CREATE FUNCTION ordered_last (regclass)
     SET search_path FROM CURRENT
     LANGUAGE sql
     AS $$ SELECT _first_last ($1, FALSE) $$;
+
+-- These two functions are something like the two halves of a cascading
+-- FK, except (1) the actual FK is hidden inside a composite type and
+-- (2) the cascading goes the wrong way, since inserts go into the
+-- ordering first but deletes go into the main table.
+
+CREATE FUNCTION ordered_insert ()
+    RETURNS trigger
+    VOLATILE
+    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            att     name        := TG_ARGV[0];
+            ord     regclass    := TG_ARGV[1];
+            rel     regclass;
+            id      integer;
+            inord   boolean;
+        BEGIN
+            EXECUTE do_substs(
+                ARRAY[ '$att$', quote_ident(att) ],
+                -- it appears to be impossible to SELECT a composite
+                -- value INTO a composite variable
+                $$ SELECT ($1.$att$).rel, ($1.$att$).id $$
+            ) INTO rel, id USING NEW;
+            RAISE NOTICE 'rel: %, id: %', rel, id;
+            
+            IF rel <> ord THEN
+                RAISE EXCEPTION 'ordered value is from "%", not "%"',
+                    rel, ord;
+            END IF;
+
+            EXECUTE do_substs(
+                ARRAY[ '$ord$', ord::text ],
+                $$ SELECT TRUE FROM $ord$ WHERE id = $1 $$
+            ) INTO inord USING id;
+
+            IF inord IS NULL THEN
+                RAISE EXCEPTION 'id % is not in ordering "%"',
+                    id, ord;
+            END IF;
+
+            RETURN NEW;
+        END;
+    $fn$;
+
+CREATE FUNCTION _ordering_gc 
+    (ord regclass, id integer, rel regclass, att name)
+    RETURNS void
+    VOLATILE
+    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            live    boolean;            
+            subst   text[];
+        BEGIN
+            subst := ARRAY[
+                '$ord$',    ord::text,
+                '$rel$',    rel::text,
+                '$att$',    att::text
+            ];
+
+            EXECUTE do_substs(subst, $n$
+                SELECT TRUE FROM $rel$
+                    WHERE ($att$).id = $1
+            $n$) INTO live USING id;
+
+            IF live IS NULL THEN
+                RAISE NOTICE 'deleting % from %', id, ord;
+                EXECUTE do_substs(subst, $del$
+                    DELETE FROM $ord$ WHERE id = $1
+                $del$) USING id;
+            END IF;
+        END;
+    $fn$;
+
+CREATE FUNCTION ordered_delete ()
+    RETURNS trigger
+    VOLATILE
+    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            att     name    := TG_ARGV[0];
+            val     ordered;
+        BEGIN
+            EXECUTE do_substs(
+                ARRAY[ '$att$', quote_ident(att) ],
+                $$ SELECT $1.$att$ $$
+            ) INTO val USING OLD;
+
+            PERFORM _ordering_gc(val.rel, val.id, TG_RELID, att);
+            RETURN NULL;
+        END;
+    $fn$;
+
+CREATE FUNCTION ordering_insert ()
+    RETURNS trigger
+    VOLATILE
+    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            rel     regclass    := TG_ARGV[0];
+            att     name        := TG_ARGV[1];
+            val     integer;
+        BEGIN
+            EXECUTE 'SELECT $1.id' INTO val USING NEW;
+            PERFORM _ordering_gc(TG_RELID, val, rel, att);
+            RETURN NULL;
+        END;
+    $fn$;
