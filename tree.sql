@@ -143,6 +143,42 @@ CREATE FUNCTION _set_ordering_for (ord oid, rel oid, att int2)
         END;
     $fn$;
 
+CREATE FUNCTION set_ordering_for (ord regclass, rel regclass, att name)
+    RETURNS void
+    VOLATILE
+    SET search_path FROM CURRENT
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            att_num int2;
+        BEGIN
+            SELECT _verify_att(a)
+                INTO att_num
+                FROM pg_attribute a
+                WHERE a.attrelid = rel AND a.attname = att;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'column "%" of "%" does not exist',
+                    rel, att;
+            END IF;
+
+            PERFORM _set_ordering_for(ord, rel, att_num);
+            PERFORM do_execs(
+                ARRAY[
+                    '$ord$', quote_literal(ord),
+                    '$rel$', rel::text,
+                    '$att$', att::text
+                ],
+                ARRAY[
+                    $chk$ 
+                        ALTER TABLE $rel$ 
+                            ADD CHECK (($att$).rel = $ord$::regclass)
+                    $chk$
+                ]
+            );
+        END;
+    $fn$;
+
+
 CREATE FUNCTION create_ordering_for (rel regclass, att name)
     RETURNS oid
     VOLATILE
@@ -154,24 +190,21 @@ CREATE FUNCTION create_ordering_for (rel regclass, att name)
             rel_nm  name;
             ord_nm  name;
             ord_oid oid;
-            att_num int2;
         BEGIN
-            SELECT _verify_att(a), r.relname, n.nspname
-                INTO att_num, rel_nm, nsp
-                FROM pg_attribute a
-                    JOIN pg_class r ON a.attrelid = r.oid
+            SELECT r.relname, n.nspname
+                INTO rel_nm, nsp
+                FROM pg_class r
                     JOIN pg_namespace n ON r.relnamespace = n.oid
-                WHERE r.oid = rel AND a.attname = att;
+                WHERE r.oid = rel;
             
             IF NOT FOUND THEN
-                RAISE EXCEPTION 'column "%" of "%" does not exist',
-                    att, rel;
+                RAISE EXCEPTION 'relation "%" does not exist', rel;
             END IF;
 
             ord_nm := rel_nm || '_' || att || '_ord';
 
             SELECT create_ordering(ord_nm, nsp) INTO ord_oid;
-            PERFORM _set_ordering_for(ord_oid, rel, att_num);
+            PERFORM set_ordering_for(ord_oid, rel, att);
 
             RETURN ord_oid;
         END;
