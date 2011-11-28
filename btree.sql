@@ -8,12 +8,17 @@
 -- Released under the 2-clause BSD licence.
 --
 
+-- This is not quite a btree. Since it's never used for search (all
+-- lookups by key go through the gin index, which is sorted in a
+-- different order) there's no need for any keys in the non-leaf nodes.
+-- So, every node has a single array of 'kids': for leaf nodes, these
+-- are keys, for non-leaf nodes, these are pointers to child nodes.
+
 CREATE TABLE btree (
     id      serial      PRIMARY KEY,
     kids    integer[]   DEFAULT '{}' NOT NULL,
-    keys    integer[]   DEFAULT '{}' NOT NULL
+    leaf    boolean     DEFAULT TRUE NOT NULL
 );
-CREATE INDEX btree_keys ON btree USING gin (keys);
 CREATE INDEX btree_kids ON btree USING gin (kids);
 
 -- since this is just a temporary arrangement until users can create
@@ -22,12 +27,11 @@ GRANT ALL ON btree TO PUBLIC;
 GRANT ALL ON SEQUENCE btree_id_seq TO PUBLIC;
 
 CREATE TYPE btree_x AS (
-    id integer,
-    nk integer,
-    ks integer[],
-    nd integer,
-    ds integer[],
-    ix integer
+    id      integer,
+    nk      integer,
+    ks      integer[],
+    leaf    boolean,
+    ix      integer
 );
 
 -- btree_x functions
@@ -35,8 +39,8 @@ CREATE TYPE btree_x AS (
 CREATE FUNCTION btree_x(btree) RETURNS btree_x
     LANGUAGE sql IMMUTABLE
     AS $fn$
-        SELECT $1.id, coalesce(array_length($1.keys, 1), 0), $1.keys,
-            array_length($1.kids, 1), $1.kids, NULL::integer;
+        SELECT $1.id, coalesce(array_length($1.kids, 1), 0), $1.kids,
+            $1.leaf, NULL::integer; 
     $fn$;
 CREATE CAST (btree AS btree_x)
     WITH FUNCTION btree_x (btree)
@@ -45,7 +49,7 @@ CREATE CAST (btree AS btree_x)
 CREATE FUNCTION btree(btree_x) RETURNS btree
     LANGUAGE sql IMMUTABLE
     AS $fn$ 
-        SELECT $1.id, $1.ds, $1.ks;
+        SELECT $1.id, $1.ks, $1.leaf;
     $fn$;
 CREATE CAST (btree_x AS btree)
     WITH FUNCTION btree (btree_x);
@@ -54,7 +58,7 @@ CREATE FUNCTION reset(btree_x) RETURNS btree_x
     LANGUAGE sql IMMUTABLE
     AS $fn$
         SELECT $1.id, coalesce(array_length($1.ks, 1), 0), $1.ks,
-            array_length($1.ds, 1), $1.ds, $1.ix;
+            $1.leaf, $1.ix;
     $fn$;
 
 CREATE FUNCTION update(n btree_x) RETURNS void
@@ -64,7 +68,7 @@ CREATE FUNCTION update(n btree_x) RETURNS void
             IF n.ks = '{}' THEN
                 DELETE FROM btree WHERE id = n.id;
             ELSE
-                UPDATE btree SET keys = n.ks, kids = n.ds
+                UPDATE btree SET kids = n.ks
                     WHERE id = n.id;
             END IF;
         END;
@@ -90,7 +94,7 @@ CREATE FUNCTION underflow(INOUT n btree_x)
             s   btree_x;
         BEGIN
             p := b::btree_x FROM btree b 
-                WHERE ARRAY[n.id] <@ kids;
+                WHERE ARRAY[n.id] <@ kids AND NOT leaf;
 
             IF p IS NULL THEN
                 -- The root is allowed to underflow. If it empties
@@ -99,41 +103,29 @@ CREATE FUNCTION underflow(INOUT n btree_x)
                 RETURN;
             END IF;
 
-            p.ix := ix(p.ds, n.id);
+            p.ix := ix(p.ks, n.id);
 
             << switch >>
             BEGIN
                 IF p.ix > 1 THEN
                     s := b::btree_x FROM btree b
-                        WHERE id = p.ds[p.ix - 1];
+                        WHERE id = p.ks[p.ix - 1];
 
                     IF s.nk > 4 THEN
-                        n.ks          := p.ks[p.ix-1] || n.ks;
-                        p.ks[p.ix-1]  := s.ks[s.nk];
-                        s.ks          := s.ks[1:s.nk-1];
-
-                        IF n.ds <> '{}' THEN
-                            n.ds      := s.ds[s.nd] || n.ds;
-                            s.ds      := s.ds[1:s.nd-1];
-                        END IF;
+                        n.ks    := s.ks[s.nk] || n.ks;
+                        s.ks    := s.ks[1:s.nk-1];
 
                         EXIT switch;
                     END IF;
                 END IF;
 
-                IF p.ix < p.nd THEN
+                IF p.ix < p.nk THEN
                     s := b::btree_x FROM btree b
-                        WHERE id = p.ds[p.ix + 1];
+                        WHERE id = p.ks[p.ix + 1];
 
                     IF s.nk > 4 THEN
-                        n.ks        := n.ks || p.ks[p.ix];
-                        p.ks[p.ix]  := s.ks[1];
-                        s.ks        := s.ks[2:s.nk];
-
-                        IF n.ds <> '{}' THEN
-                            n.ds    := n.ds || s.ds[1];
-                            s.ds    := s.ds[2:s.nd];
-                        END IF;
+                        n.ks    := n.ks || s.ks[1];
+                        s.ks    := s.ks[2:s.nk];
 
                         EXIT switch;
                     END IF;
@@ -146,16 +138,12 @@ CREATE FUNCTION underflow(INOUT n btree_x)
                     RAISE 'panic: merge % with no siblings', n;
                 END IF;
 
-                IF p.ix < p.nd THEN
-                    n.ks  := n.ks || p.ks[p.ix] || s.ks;
-                    n.ds  := n.ds || s.ds;
-                    p.ks  := p.ks[1:p.ix-1] || p.ks[p.ix+1:p.nk];
-                    p.ds  := p.ds[1:p.ix] || p.ds[p.ix+2:p.nd];
+                IF p.ix < p.nk THEN
+                    n.ks  := n.ks || s.ks;
+                    p.ks  := p.ks[1:p.ix] || p.ks[p.ix+2:p.nk];
                 ELSE
-                    n.ks  := s.ks || p.ks[p.ix-1] || n.ks;
-                    n.ds  := s.ds || n.ds;
-                    p.ks  := p.ks[1:p.ix-2];
-                    p.ds  := p.ds[1:p.ix-2] || p.ds[p.ix];
+                    n.ks  := s.ks || n.ks;
+                    p.ks  := p.ks[1:p.ix-2] || p.ks[p.ix];
                 END IF;
 
                 s.ks := '{}';
@@ -177,11 +165,9 @@ CREATE FUNCTION delete(k integer) RETURNS void
     AS $$
         DECLARE
             n       btree_x;
-            c       btree_x;
-            i       integer;
-            l       integer;
         BEGIN
-            n := b::btree_x FROM btree b WHERE ARRAY[k] <@ keys;
+            n := b::btree_x FROM btree b 
+                WHERE ARRAY[k] <@ kids AND leaf;
             IF n IS NULL THEN
                 RAISE 'not in btree: %', k;
             END IF;
@@ -190,96 +176,79 @@ CREATE FUNCTION delete(k integer) RETURNS void
 
             RAISE NOTICE 'deleting % at %/% in node %', k, n.ix, n.nk, n.id;
 
-            IF n.ds = '{}' THEN
-                n.ks := n.ks[1:n.ix-1] || n.ks[n.ix+1:n.nk];
-                n := reset(n);
+            n.ks := n.ks[1:n.ix-1] || n.ks[n.ix+1:n.nk];
+            n := reset(n);
 
-                IF n.nk < 4 THEN
-                    n := underflow(n);
-                END IF;
-
-                PERFORM update(n);
-            ELSE
-                c := last_child(n.ds[n.ix])::btree_x;
-                RAISE NOTICE 'last child: % (%)', c.id, c.ks[c.nk];
-
-                n.ks[n.ix]  := c.ks[c.nk];
-                c.ks        := c.ks[1:c.nk - 1];
-                c := reset(c);
-
-                -- we need to update n before we underflow c as c may
-                -- recurse back up to n
-                PERFORM update(n);
-
-                IF c.nk < 4 THEN
-                    c := underflow(c);
-                END IF;
-
-                PERFORM update(c);
+            IF n.nk < 4 THEN
+                n := underflow(n);
             END IF;
+
+            PERFORM update(n);
         END;
     $$;
 
 CREATE FUNCTION insert(
-        n integer, before integer, iskey boolean DEFAULT TRUE, 
-        val integer DEFAULT NULL, d integer DEFAULT NULL
+        before integer, 
+        val integer DEFAULT NULL, isk boolean DEFAULT TRUE
     ) RETURNS integer
     LANGUAGE plpgsql VOLATILE
     AS $$
         DECLARE
             seq     regclass;
             k       integer;
-            i       integer;
-            ks      integer[];
-            ds      integer[];
+            n       btree_x;
             p       integer;
-            len     integer;
             new     integer;
         BEGIN
             seq := pg_get_serial_sequence('btree', 'id');
             k   := coalesce(val, nextval(seq));
 
-            SELECT keys, kids INTO ks, ds
-                FROM btree WHERE id = n;
-            IF NOT FOUND THEN 
-                RAISE '% not a btree node', n; 
-            END IF;
-
-            len := coalesce(array_length(ks, 1), 0);
-            i   := CASE 
-                WHEN before IS NULL THEN len + 1
-                WHEN iskey          THEN ix(ks, before)
-                ELSE ix(ds, before)
-            END;
-            IF i = 0 THEN 
-                RAISE '% not found in node %', before, n;
-            END IF;
-
-            ks := ks[1:i - 1] || k || ks[i:len];
-            IF d IS NOT NULL THEN
-                -- we always split leftwards
-                ds := ds[1:i - 1] || d || ds[i:len + 1];
-            END IF;
-
-            IF len < 8 THEN
-                UPDATE btree SET keys = ks, kids = ds WHERE id = n;
+            IF before IS NULL THEN
+                n := last_child(id)::btree_x FROM (
+                    SELECT id FROM btree c WHERE NOT EXISTS (
+                        SELECT 1 FROM btree px WHERE ARRAY[c.id] <@ px.kids
+                    )
+                ) r;
+                n.ix := n.nk + 1;
             ELSE
-                new := nextval(seq);
-                SELECT id INTO p FROM btree WHERE ARRAY[n] <@ kids;
-
-                IF p IS NULL THEN
-                    INSERT INTO btree (keys, kids)
-                        VALUES (ARRAY[ ks[5] ], ARRAY[ new, n ])
-                        RETURNING id INTO p;
-                ELSE
-                    PERFORM insert(p, n, FALSE, ks[5], new);
+                n := b::btree_x FROM btree b
+                    WHERE ARRAY[before] <@ kids AND leaf = isk;
+                
+                IF n IS NULL THEN
+                    RAISE 'not in btree: % (%)', before, isk;
                 END IF;
 
-                UPDATE btree 
-                    SET keys = ks[6:9], kids = ds[6:10]
-                    WHERE id = n;
-                INSERT INTO btree (id, keys, kids) 
-                    VALUES (new, ks[1:4], ds[1:5]);
+                n.ix := ix(n.ks, before);
+            END IF;
+
+            RAISE NOTICE 'inserting % into % at %', k, n.id, n.ix;
+
+            n.ks := n.ks[1:n.ix-1] || k || n.ks[n.ix:n.nk];
+            n    := reset(n);
+
+            IF n.nk < 8 THEN
+                PERFORM update(n);
+            ELSE
+                new := nextval(seq);
+                SELECT id INTO p FROM btree 
+                    WHERE ARRAY[n.id] <@ kids AND NOT leaf;
+
+                INSERT INTO btree (id, kids, leaf) 
+                    VALUES (new, n.ks[1:4], n.leaf);
+                n.ks := n.ks[5:8];
+                PERFORM update(n);
+
+                IF p IS NULL THEN
+                    RAISE NOTICE 'split %/% to new root', n.id, new;
+                    INSERT INTO btree (kids, leaf)
+                        VALUES (ARRAY[ new, n.id ], FALSE)
+                        RETURNING id INTO p;
+                    RAISE NOTICE 'new root: %', p;
+                ELSE
+                    RAISE NOTICE 'split %/% in %', n.id, new, p;
+                    PERFORM insert(n.id, new, FALSE);
+                END IF;
+
             END IF;
 
             RETURN k;
@@ -289,7 +258,7 @@ CREATE FUNCTION insert(
 -- search
 
 CREATE FUNCTION last_child(integer) RETURNS btree
-    LANGUAGE sql
+    LANGUAGE sql STABLE
     AS $fn$
         WITH RECURSIVE
             parent (bt, depth) AS (
