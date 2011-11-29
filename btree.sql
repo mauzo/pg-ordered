@@ -61,16 +61,23 @@ CREATE FUNCTION reset(btree_x) RETURNS btree_x
             $1.leaf, $1.ix;
     $fn$;
 
-CREATE FUNCTION update(n btree_x) RETURNS void
+CREATE FUNCTION update(INOUT n btree_x)
     LANGUAGE plpgsql VOLATILE
     AS $fn$
         BEGIN
-            IF n.ks = '{}' THEN
-                DELETE FROM btree WHERE id = n.id;
-            ELSE
-                UPDATE btree SET kids = n.ks
-                    WHERE id = n.id;
-            END IF;
+            CASE
+                WHEN n.id IS NULL THEN
+                    INSERT INTO btree (kids, leaf)
+                        VALUES (n.ks, n.leaf)
+                        RETURNING id INTO n.id;
+
+                WHEN n.ks = '{}' THEN
+                    DELETE FROM btree WHERE id = n.id;
+
+                ELSE
+                    UPDATE btree SET kids = n.ks
+                        WHERE id = n.id;
+            END CASE;
         END;
     $fn$;
 
@@ -197,8 +204,8 @@ CREATE FUNCTION insert(
             seq     regclass;
             k       integer;
             n       btree_x;
-            p       integer;
-            new     integer;
+            s       btree_x;
+            p       btree_x;
         BEGIN
             seq := pg_get_serial_sequence('btree', 'id');
             k   := coalesce(val, nextval(seq));
@@ -229,24 +236,25 @@ CREATE FUNCTION insert(
             IF n.nk < 8 THEN
                 PERFORM update(n);
             ELSE
-                new := nextval(seq);
-                SELECT id INTO p FROM btree 
+                s.ks    := n.ks[1:4];
+                s.leaf  := n.leaf;
+                n.ks    := n.ks[5:8];
+
+                s := update(s);
+                n := update(n);
+
+                p := b::btree_x FROM btree b
                     WHERE ARRAY[n.id] <@ kids AND NOT leaf;
 
-                INSERT INTO btree (id, kids, leaf) 
-                    VALUES (new, n.ks[1:4], n.leaf);
-                n.ks := n.ks[5:8];
-                PERFORM update(n);
-
                 IF p IS NULL THEN
-                    RAISE NOTICE 'split %/% to new root', n.id, new;
-                    INSERT INTO btree (kids, leaf)
-                        VALUES (ARRAY[ new, n.id ], FALSE)
-                        RETURNING id INTO p;
-                    RAISE NOTICE 'new root: %', p;
+                    RAISE NOTICE 'split %/% to new root', n.id, s.id;
+                    p.ks    := ARRAY[ s.id, n.id ];
+                    p.leaf  := FALSE;
+                    p := update(p);
+                    RAISE NOTICE 'new root: %', p.id;
                 ELSE
-                    RAISE NOTICE 'split %/% in %', n.id, new, p;
-                    PERFORM insert(n.id, new, FALSE);
+                    RAISE NOTICE 'split %/% in %', n.id, s.id, p.id;
+                    PERFORM insert(n.id, s.id, FALSE);
                 END IF;
 
             END IF;
