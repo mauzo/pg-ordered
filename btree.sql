@@ -34,14 +34,29 @@ CREATE TYPE btree_x AS (
     ix      integer
 );
 
+-- array functions
+
+CREATE FUNCTION ix(anyarray, anyelement) RETURNS integer
+    LANGUAGE sql IMMUTABLE
+    AS $fn$
+        SELECT n 
+            FROM generate_series(1, array_length($1, 1)) s (n)
+            WHERE $1[n] = $2
+    $fn$;
+
 -- btree_x functions
 
-CREATE FUNCTION btree_x(btree) RETURNS btree_x
+CREATE FUNCTION btree_x (btree, integer) RETURNS btree_x
     LANGUAGE sql IMMUTABLE
     AS $fn$
         SELECT $1.id, coalesce(array_length($1.kids, 1), 0), $1.kids,
-            $1.leaf, NULL::integer; 
+            $1.leaf, ix($1.kids, $2);
     $fn$;
+
+CREATE FUNCTION btree_x (btree) RETURNS btree_x
+    LANGUAGE sql IMMUTABLE
+    AS $fn$ SELECT btree_x($1, NULL::integer); $fn$;
+
 CREATE CAST (btree AS btree_x)
     WITH FUNCTION btree_x (btree)
     AS ASSIGNMENT;
@@ -53,6 +68,13 @@ CREATE FUNCTION btree(btree_x) RETURNS btree
     $fn$;
 CREATE CAST (btree_x AS btree)
     WITH FUNCTION btree (btree_x);
+
+CREATE FUNCTION btfind (integer, boolean) RETURNS btree_x
+    LANGUAGE sql STABLE
+    AS $fn$
+        SELECT btree_x(b, $1) FROM btree b
+            WHERE array[$1] <@ b.kids AND b.leaf = $2;
+    $fn$;
 
 CREATE FUNCTION reset(btree_x) RETURNS btree_x
     LANGUAGE sql IMMUTABLE
@@ -81,16 +103,6 @@ CREATE FUNCTION update(INOUT n btree_x)
         END;
     $fn$;
 
--- array functions
-
-CREATE FUNCTION ix(anyarray, anyelement) RETURNS integer
-    LANGUAGE sql IMMUTABLE
-    AS $fn$
-        SELECT n 
-            FROM generate_series(1, array_length($1, 1)) s (n)
-            WHERE $1[n] = $2
-    $fn$;
-
 -- insert and delete
 
 CREATE FUNCTION underflow(INOUT n btree_x)
@@ -100,8 +112,7 @@ CREATE FUNCTION underflow(INOUT n btree_x)
             p   btree_x;
             s   btree_x;
         BEGIN
-            p := b::btree_x FROM btree b 
-                WHERE ARRAY[n.id] <@ kids AND NOT leaf;
+            p := btfind(n.id, false);
 
             IF p IS NULL THEN
                 -- The root is allowed to underflow. If it empties
@@ -109,9 +120,7 @@ CREATE FUNCTION underflow(INOUT n btree_x)
                 -- update().
                 RETURN;
             END IF;
-
-            p.ix := ix(p.ks, n.id);
-
+            
             << switch >>
             BEGIN
                 IF p.ix > 1 THEN
@@ -173,13 +182,10 @@ CREATE FUNCTION delete(k integer) RETURNS void
         DECLARE
             n       btree_x;
         BEGIN
-            n := b::btree_x FROM btree b 
-                WHERE ARRAY[k] <@ kids AND leaf;
+            n := btfind(k, true);
             IF n IS NULL THEN
                 RAISE 'not in btree: %', k;
             END IF;
-
-            n.ix := ix(n.ks, k);
 
             RAISE NOTICE 'deleting % at %/% in node %', k, n.ix, n.nk, n.id;
 
@@ -218,14 +224,11 @@ CREATE FUNCTION insert(
                 ) r;
                 n.ix := n.nk + 1;
             ELSE
-                n := b::btree_x FROM btree b
-                    WHERE ARRAY[before] <@ kids AND leaf = isk;
+                n := btfind(before, isk);
                 
                 IF n IS NULL THEN
                     RAISE 'not in btree: % (%)', before, isk;
                 END IF;
-
-                n.ix := ix(n.ks, before);
             END IF;
 
             RAISE NOTICE 'inserting % into % at %', k, n.id, n.ix;
@@ -243,8 +246,7 @@ CREATE FUNCTION insert(
                 s := update(s);
                 n := update(n);
 
-                p := b::btree_x FROM btree b
-                    WHERE ARRAY[n.id] <@ kids AND NOT leaf;
+                p := btfind(n.id, false);
 
                 IF p IS NULL THEN
                     RAISE NOTICE 'split %/% to new root', n.id, s.id;
