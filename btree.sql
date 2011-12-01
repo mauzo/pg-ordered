@@ -16,23 +16,19 @@
 
 CREATE TABLE btree (
     id      serial      PRIMARY KEY,
-    kids    integer[]   DEFAULT '{}' NOT NULL,
-    leaf    boolean     DEFAULT TRUE NOT NULL
+    kids    integer[]   NOT NULL,
+    leaf    boolean,
+
+    CHECK( id = 0 OR leaf IS NOT NULL )
 );
 CREATE INDEX btree_kids ON btree USING gin (kids);
+INSERT INTO btree (kids, leaf) VALUES ('{}', true);
+INSERT INTO btree VALUES (0, array[1, 8], NULL);
 
 -- since this is just a temporary arrangement until users can create
 -- their own trees, allow full access.
 GRANT ALL ON btree TO PUBLIC;
 GRANT ALL ON SEQUENCE btree_id_seq TO PUBLIC;
-
-CREATE TYPE btree_x AS (
-    id      integer,
-    nk      integer,
-    ks      integer[],
-    leaf    boolean,
-    ix      integer
-);
 
 -- array functions
 
@@ -44,12 +40,45 @@ CREATE FUNCTION ix(anyarray, anyelement) RETURNS integer
             WHERE $1[n] = $2
     $fn$;
 
+-- metapage functions
+
+CREATE TYPE btree_meta AS (
+    root    integer,
+    fill    integer
+);
+
+CREATE FUNCTION btmeta () RETURNS btree_meta
+    LANGUAGE sql STABLE
+    AS $fn$
+        SELECT kids[1], kids[2]
+            FROM btree
+            WHERE id = 0;
+    $fn$;
+
+CREATE FUNCTION update (btree_meta) RETURNS btree_meta
+    LANGUAGE sql VOLATILE
+    AS $fn$
+        UPDATE btree SET kids[1] = $1.root, kids[2] = $1.fill
+            WHERE id = 0;
+        SELECT btmeta();
+    $fn$;
+
 -- btree_x functions
+
+CREATE TYPE btree_x AS (
+    meta    btree_meta,
+    id      integer,
+    nk      integer,
+    ks      integer[],
+    leaf    boolean,
+    ix      integer
+);
 
 CREATE FUNCTION btree_x (btree, integer) RETURNS btree_x
     LANGUAGE sql IMMUTABLE
     AS $fn$
-        SELECT $1.id, coalesce(array_length($1.kids, 1), 0), $1.kids,
+        SELECT btmeta(), $1.id, 
+            coalesce(array_length($1.kids, 1), 0), $1.kids,
             $1.leaf, ix($1.kids, $2);
     $fn$;
 
@@ -79,14 +108,18 @@ CREATE FUNCTION btfind (integer, boolean) RETURNS btree_x
 CREATE FUNCTION reset(btree_x) RETURNS btree_x
     LANGUAGE sql IMMUTABLE
     AS $fn$
-        SELECT $1.id, coalesce(array_length($1.ks, 1), 0), $1.ks,
+        SELECT $1.meta, $1.id, 
+            coalesce(array_length($1.ks, 1), 0), $1.ks,
             $1.leaf, $1.ix;
     $fn$;
 
 CREATE FUNCTION update(INOUT n btree_x)
     LANGUAGE plpgsql VOLATILE
     AS $fn$
+        DECLARE
+            m   btree_meta;
         BEGIN
+            m := n.meta;
             CASE
                 WHEN n.id IS NULL THEN
                     INSERT INTO btree (kids, leaf)
@@ -94,6 +127,9 @@ CREATE FUNCTION update(INOUT n btree_x)
                         RETURNING id INTO n.id;
 
                 WHEN n.ks = '{}' THEN
+                    IF n.id = m.root AND n.leaf THEN
+                        RETURN;
+                    END IF;
                     DELETE FROM btree WHERE id = n.id;
 
                 ELSE
@@ -109,18 +145,32 @@ CREATE FUNCTION underflow(INOUT n btree_x)
     LANGUAGE plpgsql VOLATILE
     AS $$
         DECLARE
+            m   btree_meta;
             p   btree_x;
             s   btree_x;
         BEGIN
-            p := btfind(n.id, false);
+            m := n.meta;
 
-            IF p IS NULL THEN
-                -- The root is allowed to underflow. If it empties
-                -- completely it will be deleted when the caller calls
-                -- update().
+            IF n.id = m.root THEN
+                -- A leaf root is allowed to underflow right down to
+                -- empty, and never gets deleted. A non-leaf root with
+                -- only one child is replaced by its child.
+                IF NOT n.leaf AND n.nk = 1 THEN
+                    m.root  := n.ks[1];
+                    n.ks    := '{}';
+
+                    n.meta  := update(m);
+                    n       := reset(n);
+                END IF;
                 RETURN;
             END IF;
-            
+
+            p := btfind(n.id, false);
+
+            IF p.id IS NULL THEN
+                RAISE 'non-root % has no parents', n.id;
+            END IF;
+
             << switch >>
             BEGIN
                 IF p.ix > 1 THEN
@@ -207,21 +257,19 @@ CREATE FUNCTION insert(
     LANGUAGE plpgsql VOLATILE
     AS $$
         DECLARE
+            m       btree_meta;
             seq     regclass;
             k       integer;
             n       btree_x;
             s       btree_x;
             p       btree_x;
         BEGIN
+            m   := btmeta();
             seq := pg_get_serial_sequence('btree', 'id');
             k   := coalesce(val, nextval(seq));
 
             IF before IS NULL THEN
-                n := last_child(id)::btree_x FROM (
-                    SELECT id FROM btree c WHERE NOT EXISTS (
-                        SELECT 1 FROM btree px WHERE ARRAY[c.id] <@ px.kids
-                    )
-                ) r;
+                n := last_child(m.root)::btree_x;
                 n.ix := n.nk + 1;
             ELSE
                 n := btfind(before, isk);
@@ -246,15 +294,17 @@ CREATE FUNCTION insert(
                 s := update(s);
                 n := update(n);
 
-                p := btfind(n.id, false);
-
-                IF p IS NULL THEN
+                IF n.id = m.root THEN
                     RAISE NOTICE 'split %/% to new root', n.id, s.id;
                     p.ks    := ARRAY[ s.id, n.id ];
                     p.leaf  := FALSE;
                     p := update(p);
+
                     RAISE NOTICE 'new root: %', p.id;
+                    m.root := p.id;
+                    n.meta := update(m);
                 ELSE
+                    p := btfind(n.id, false);
                     RAISE NOTICE 'split %/% in %', n.id, s.id, p.id;
                     PERFORM insert(n.id, s.id, FALSE);
                 END IF;
