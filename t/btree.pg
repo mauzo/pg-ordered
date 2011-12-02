@@ -3,7 +3,6 @@ BEGIN;
 
 CREATE SCHEMA t;
 SET search_path TO t, tap, ordered1;
-SELECT plan(7);
 
 CREATE FUNCTION perform (anyelement) RETURNS void
     LANGUAGE sql VOLATILE
@@ -39,6 +38,28 @@ CREATE FUNCTION root (integer, integer) RETURNS text
         SELECT intrp('(0, array[%, %]::integer[], null),', $1, $2);
     $fn$;
 
+CREATE FUNCTION notthere (text, integer, text) RETURNS SETOF text
+    LANGUAGE plpgsql
+    AS $fn$
+        DECLARE
+            s   bigint;
+        BEGIN 
+            s := currval('btree_id_seq');
+
+            RETURN NEXT throws_ok(
+                intrp('SELECT % (%)', $1, $2::text),
+                'P0001', intrp('not in btree: %', $2),
+                intrp('% (%) throws correct exception', $1, $3)
+            );
+            RETURN NEXT is(
+                currval('btree_id_seq'), s,
+                intrp('% (%) doesn''t inc sequence', $1, $3)
+            );
+            RETURN;
+        END;
+    $fn$;
+
+SELECT plan(15);
 SELECT reset_btree(8);
 
 SELECT btree_is(root(1, 8) || $$
@@ -63,6 +84,10 @@ SAVEPOINT t;
         (1, '{4,2,3}',  true)
     $$,                         'insert(i) inserts before i');
 
+    SELECT notthere('insert', 5,    'not there');
+    SELECT notthere('insert', 1,    'root id');
+    SELECT notthere('insert', 8,    'root fill');
+
     SELECT perform(insert(null)) FROM generate_series(1,4);
     SELECT btree_is(root(1, 8) || $$
         (1, '{4,2,3,5,6,7,8}',  true)
@@ -74,6 +99,8 @@ SAVEPOINT t;
         (10,    '{4,2,3,5}',    true),
         (11,    '{10,1}',       false)
     $$,                         '8 items will split');
+
+    SELECT notthere('insert', 10,   'non-root id');
 
 ROLLBACK TO SAVEPOINT t;
 

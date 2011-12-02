@@ -274,7 +274,6 @@ CREATE FUNCTION insert(
         BEGIN
             m   := btmeta();
             seq := pg_get_serial_sequence('btree', 'id');
-            k   := coalesce(val, nextval(seq));
 
             IF before IS NULL THEN
                 n := last_child(m.root)::btree_x;
@@ -283,10 +282,11 @@ CREATE FUNCTION insert(
                 n := btfind(before, isk);
                 
                 IF n.id IS NULL THEN
-                    RAISE 'not in btree: % (%)', before, isk;
+                    RAISE 'not in btree: %', before;
                 END IF;
             END IF;
 
+            k := coalesce(val, nextval(seq));
             RAISE NOTICE 'inserting % into % at %', k, n.id, n.ix;
 
             n.ks := n.ks[1:n.ix-1] || k || n.ks[n.ix:n.nk];
