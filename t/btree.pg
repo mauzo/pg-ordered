@@ -22,20 +22,17 @@ CREATE FUNCTION intrp (INOUT str text, VARIADIC sub anyarray)
         END;
     $fn$;
 
-CREATE FUNCTION btree_is (text, text) RETURNS text
+CREATE FUNCTION btree_is (integer, integer, text, text) RETURNS text
     LANGUAGE sql VOLATILE
     AS $fn$
         SELECT bag_eq(
             $wnt$ SELECT * FROM btree $wnt$,
-            intrp('VALUES %', $1),
-            $2
+            intrp(
+                $$ VALUES (0, array[%, %]::integer[], null), % $$,
+                $1::text, $2::text, $3
+            ),
+            $4
         );
-    $fn$;
-
-CREATE FUNCTION root (integer, integer) RETURNS text
-    LANGUAGE sql
-    AS $fn$
-        SELECT intrp('(0, array[%, %]::integer[], null),', $1, $2);
     $fn$;
 
 CREATE FUNCTION notthere (text, integer, text) RETURNS SETOF text
@@ -62,7 +59,7 @@ CREATE FUNCTION notthere (text, integer, text) RETURNS SETOF text
 SELECT plan(15);
 SELECT reset_btree(8);
 
-SELECT btree_is(root(1, 8) || $$
+SELECT btree_is(1, 8, $$
     (1, '{}',   true)
 $$,                             'initial empty btree');
 
@@ -70,17 +67,17 @@ SAVEPOINT t;
 
     SELECT is(insert(null), 2,  'insert returns next seq value');
 
-    SELECT btree_is(root(1, 8) || $$
+    SELECT btree_is(1, 8, $$
         (1, '{2}',      true)
     $$,                         'inserted into root node');
 
     SELECT perform(insert(null));
-    SELECT btree_is(root(1, 8) || $$
+    SELECT btree_is(1, 8, $$
         (1, '{2,3}',    true)
     $$,                         'insert(null) inserts at end');
 
     SELECT perform(insert(2));
-    SELECT btree_is(root(1, 8) || $$
+    SELECT btree_is(1, 8, $$
         (1, '{4,2,3}',  true)
     $$,                         'insert(i) inserts before i');
 
@@ -89,12 +86,12 @@ SAVEPOINT t;
     SELECT notthere('insert', 8,    'root fill');
 
     SELECT perform(insert(null)) FROM generate_series(1,4);
-    SELECT btree_is(root(1, 8) || $$
+    SELECT btree_is(1, 8, $$
         (1, '{4,2,3,5,6,7,8}',  true)
     $$,                         '7 items will fit without splitting');
 
     SELECT perform(insert(null));
-    SELECT btree_is(root(11, 8) || $$
+    SELECT btree_is(11, 8, $$
         (1,     '{6,7,8,9}',    true),
         (10,    '{4,2,3,5}',    true),
         (11,    '{10,1}',       false)
