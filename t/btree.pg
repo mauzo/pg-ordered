@@ -12,20 +12,31 @@ CREATE FUNCTION perform (anyelement) RETURNS void
         COMMENT ON FUNCTION perform (anyelement) IS NULL;
     $fn$;
 
+CREATE FUNCTION intrp (INOUT str text, VARIADIC sub anyarray)
+    LANGUAGE plpgsql STABLE
+    AS $fn$
+        BEGIN
+            FOR i IN 1 .. array_length(sub, 1) LOOP
+                -- regexp_replace since replace won't do just one
+                str := regexp_replace(str, '%', sub[i]::text);
+            END LOOP;
+        END;
+    $fn$;
+
 CREATE FUNCTION btree_is (text, text) RETURNS text
     LANGUAGE sql VOLATILE
     AS $fn$
         SELECT bag_eq(
             $wnt$ SELECT * FROM btree $wnt$,
-            'VALUES' || $1,
+            intrp('VALUES %', $1),
             $2
         );
     $fn$;
 
-CREATE FUNCTION root(integer, integer) RETURNS text
+CREATE FUNCTION root (integer, integer) RETURNS text
     LANGUAGE sql
     AS $fn$
-        SELECT '(0, array[' || $1 || ',' || $2 || ']::integer[], null),';
+        SELECT intrp('(0, array[%, %]::integer[], null),', $1, $2);
     $fn$;
 
 SELECT reset_btree(8);
