@@ -22,8 +22,16 @@ CREATE TABLE btree (
     CHECK( id = 0 OR leaf IS NOT NULL )
 );
 CREATE INDEX btree_kids ON btree USING gin (kids);
-INSERT INTO btree (kids, leaf) VALUES ('{}', true);
-INSERT INTO btree VALUES (0, array[1, 8], NULL);
+
+CREATE FUNCTION reset_btree (integer) RETURNS void
+    LANGUAGE sql VOLATILE
+    SECURITY DEFINER
+    SET search_path FROM CURRENT
+    AS $fn$
+        TRUNCATE btree RESTART IDENTITY;
+        INSERT INTO btree (kids, leaf) VALUES ('{}', true);
+        INSERT INTO btree VALUES (0, array[1, $1], NULL);
+    $fn$;
 
 -- since this is just a temporary arrangement until users can create
 -- their own trees, allow full access.
@@ -274,7 +282,7 @@ CREATE FUNCTION insert(
             ELSE
                 n := btfind(before, isk);
                 
-                IF n IS NULL THEN
+                IF n.id IS NULL THEN
                     RAISE 'not in btree: % (%)', before, isk;
                 END IF;
             END IF;

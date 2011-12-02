@@ -1,0 +1,10 @@
+-- vi: set syn=sql :
+
+BEGIN;
+SET search_path TO tap;
+
+SELECT plan(2);
+SELECT has_schema('ordered1');
+SELECT has_type('ordered1', 'ordered'::name);
+
+ROLLBACK;

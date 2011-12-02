@@ -1,0 +1,69 @@
+-- vi: set syn=sql:
+BEGIN;
+
+CREATE SCHEMA t;
+SET search_path TO t, tap, ordered1;
+SELECT plan(7);
+
+CREATE FUNCTION perform (anyelement) RETURNS void
+    LANGUAGE sql VOLATILE
+    AS $fn$
+        SELECT $1;
+        COMMENT ON FUNCTION perform (anyelement) IS NULL;
+    $fn$;
+
+CREATE FUNCTION btree_is (text, text) RETURNS text
+    LANGUAGE sql VOLATILE
+    AS $fn$
+        SELECT bag_eq(
+            $wnt$ SELECT * FROM btree $wnt$,
+            'VALUES' || $1,
+            $2
+        );
+    $fn$;
+
+CREATE FUNCTION root(integer, integer) RETURNS text
+    LANGUAGE sql
+    AS $fn$
+        SELECT '(0, array[' || $1 || ',' || $2 || ']::integer[], null),';
+    $fn$;
+
+SELECT reset_btree(8);
+
+SELECT btree_is(root(1, 8) || $$
+    (1, '{}',   true)
+$$,                             'initial empty btree');
+
+SAVEPOINT t;
+
+    SELECT is(insert(null), 2,  'insert returns next seq value');
+
+    SELECT btree_is(root(1, 8) || $$
+        (1, '{2}',      true)
+    $$,                         'inserted into root node');
+
+    SELECT perform(insert(null));
+    SELECT btree_is(root(1, 8) || $$
+        (1, '{2,3}',    true)
+    $$,                         'insert(null) inserts at end');
+
+    SELECT perform(insert(2));
+    SELECT btree_is(root(1, 8) || $$
+        (1, '{4,2,3}',  true)
+    $$,                         'insert(i) inserts before i');
+
+    SELECT perform(insert(null)) FROM generate_series(1,4);
+    SELECT btree_is(root(1, 8) || $$
+        (1, '{4,2,3,5,6,7,8}',  true)
+    $$,                         '7 items will fit without splitting');
+
+    SELECT perform(insert(null));
+    SELECT btree_is(root(11, 8) || $$
+        (1,     '{6,7,8,9}',    true),
+        (10,    '{4,2,3,5}',    true),
+        (11,    '{10,1}',       false)
+    $$,                         '8 items will split');
+
+ROLLBACK TO SAVEPOINT t;
+
+ROLLBACK;
