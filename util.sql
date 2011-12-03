@@ -43,3 +43,47 @@ CREATE FUNCTION do_execs (subst text[], cmds text[])
         END;
     $$;
 
+CREATE FUNCTION _do (sql text) RETURNS void
+    LANGUAGE plpgsql VOLATILE
+    AS $fn$
+        DECLARE
+            pgt     oid;
+        BEGIN
+            -- We create the function in pg_temp, since it's not certain
+            -- we've got write access anywhere else. This means the call
+            -- needs to be fully-qualified, since functions are never
+            -- looked up in pg_temp. If pg_temp doesn't exist yet, we
+            -- need to autoviv it by creating and dropping a temp table.
+
+            pgt := pg_my_temp_schema();
+
+            IF pgt = 0 THEN
+                CREATE TEMP TABLE "_do autoviv pg_temp" ();
+            END IF;
+
+            PERFORM 1 FROM pg_proc
+                WHERE proname = '_do anon block'
+                    AND pronamespace = pg_my_temp_schema();
+            IF FOUND THEN
+                RAISE 'recursive _do not supported';
+            END IF;
+
+            EXECUTE ordered1.do_substs(
+                array[ '$sql$', pg_catalog.quote_literal(sql) ],
+                $do$
+                    CREATE FUNCTION pg_temp."_do anon block" () RETURNS void
+                        LANGUAGE plpgsql VOLATILE
+                        AS $sql$;
+                $do$
+            );
+            PERFORM pg_temp."_do anon block"();
+            DROP FUNCTION pg_temp."_do anon block" ();
+
+            -- we'll keep the temp table around until after we've
+            -- finished with pg_temp, just in case Pg ever decides to
+            -- start dropping it when it isn't needed any more.
+            IF pgt = 0 THEN
+                DROP TABLE "_do autoviv pg_temp";
+            END IF;
+        END;
+    $fn$;
