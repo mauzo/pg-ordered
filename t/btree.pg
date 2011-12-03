@@ -56,49 +56,46 @@ CREATE FUNCTION notthere (text, integer, text) RETURNS SETOF text
         END;
     $fn$;
 
-SELECT plan(15);
+SELECT no_plan();
 SELECT reset_btree(8);
 
 SELECT btree_is(1, 8, $$
     (1, '{}',   true)
 $$,                             'initial empty btree');
 
-SAVEPOINT t;
+SELECT is(insert(null), 2,  'insert returns next seq value');
 
-    SELECT is(insert(null), 2,  'insert returns next seq value');
+SELECT btree_is(1, 8, $$
+    (1, '{2}',      true)
+$$,                         'inserted into root node');
 
-    SELECT btree_is(1, 8, $$
-        (1, '{2}',      true)
-    $$,                         'inserted into root node');
+SELECT perform(insert(null));
+SELECT btree_is(1, 8, $$
+    (1, '{2,3}',    true)
+$$,                         'insert(null) inserts at end');
 
-    SELECT perform(insert(null));
-    SELECT btree_is(1, 8, $$
-        (1, '{2,3}',    true)
-    $$,                         'insert(null) inserts at end');
+SELECT perform(insert(2));
+SELECT btree_is(1, 8, $$
+    (1, '{4,2,3}',  true)
+$$,                         'insert(i) inserts before i');
 
-    SELECT perform(insert(2));
-    SELECT btree_is(1, 8, $$
-        (1, '{4,2,3}',  true)
-    $$,                         'insert(i) inserts before i');
+SELECT notthere('insert', 5,    'not there');
+SELECT notthere('insert', 1,    'root id');
+SELECT notthere('insert', 8,    'root fill');
 
-    SELECT notthere('insert', 5,    'not there');
-    SELECT notthere('insert', 1,    'root id');
-    SELECT notthere('insert', 8,    'root fill');
+SELECT perform(insert(null)) FROM generate_series(1,4);
+SELECT btree_is(1, 8, $$
+    (1, '{4,2,3,5,6,7,8}',  true)
+$$,                         '7 items will fit without splitting');
 
-    SELECT perform(insert(null)) FROM generate_series(1,4);
-    SELECT btree_is(1, 8, $$
-        (1, '{4,2,3,5,6,7,8}',  true)
-    $$,                         '7 items will fit without splitting');
+SELECT perform(insert(null));
+SELECT btree_is(11, 8, $$
+    (1,     '{6,7,8,9}',    true),
+    (10,    '{4,2,3,5}',    true),
+    (11,    '{10,1}',       false)
+$$,                         '8 items will split');
 
-    SELECT perform(insert(null));
-    SELECT btree_is(11, 8, $$
-        (1,     '{6,7,8,9}',    true),
-        (10,    '{4,2,3,5}',    true),
-        (11,    '{10,1}',       false)
-    $$,                         '8 items will split');
+SELECT notthere('insert', 10,   'non-root id');
 
-    SELECT notthere('insert', 10,   'non-root id');
-
-ROLLBACK TO SAVEPOINT t;
-
+SELECT * FROM finish();
 ROLLBACK;
