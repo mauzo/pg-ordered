@@ -40,13 +40,25 @@ GRANT ALL ON SEQUENCE btree_id_seq TO PUBLIC;
 
 -- array functions
 
-CREATE FUNCTION ix(anyarray, anyelement) RETURNS integer
+CREATE FUNCTION idx(anyarray, anyelement) RETURNS integer
     LANGUAGE sql IMMUTABLE
     AS $fn$
         SELECT n 
             FROM generate_series(1, array_length($1, 1)) s (n)
             WHERE $1[n] = $2
     $fn$;
+
+-- use the optimised version from contrib/intarray if we've got it
+SELECT _do($do$
+    BEGIN
+        CREATE FUNCTION idx (integer[], integer) RETURNS integer
+            LANGUAGE C STRICT IMMUTABLE
+            AS '$libdir/_int';
+    EXCEPTION
+        WHEN undefined_file THEN
+            NULL;
+    END;
+$do$);
 
 -- metapage functions
 
@@ -87,7 +99,7 @@ CREATE FUNCTION btree_x (btree, integer) RETURNS btree_x
     AS $fn$
         SELECT btmeta(), $1.id, 
             coalesce(array_length($1.kids, 1), 0), $1.kids,
-            $1.leaf, ix($1.kids, $2);
+            $1.leaf, idx($1.kids, $2);
     $fn$;
 
 CREATE FUNCTION btree_x (btree) RETURNS btree_x
