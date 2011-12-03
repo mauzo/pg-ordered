@@ -35,6 +35,16 @@ CREATE FUNCTION btree_is (integer, integer, text, text) RETURNS text
         );
     $fn$;
 
+CREATE FUNCTION btree_has (btree, text) RETURNS text
+    LANGUAGE sql VOLATILE
+    AS $fn$
+        SELECT set_has(
+            $$ SELECT * FROM btree $$,
+            intrp('SELECT (%::btree).*', quote_literal($1)),
+            $2
+        );
+    $fn$;
+
 CREATE FUNCTION notthere (text, integer, text) RETURNS SETOF text
     LANGUAGE plpgsql
     AS $fn$
@@ -96,6 +106,26 @@ SELECT btree_is(11, 8, $$
 $$,                         '8 items will split');
 
 SELECT notthere('insert', 10,   'non-root id');
+
+SELECT perform(insert(2));
+SELECT btree_has(
+    (10, '{4,12,2,3,5}', true),
+    'insert(i) finds the right child');
+
+SELECT perform(insert(null));
+SELECT btree_has(
+    (1, '{6,7,8,9,13}', true),
+    'insert(null) finds the right child');
+
+SELECT perform(insert(null));
+SELECT perform(insert(null));
+SELECT perform(insert(null));
+SELECT btree_is(11, 8, $$
+    (1,     '{13,14,15,16}',    true),
+    (17,    '{6,7,8,9}',        true),
+    (10,    '{4,12,2,3,5}',     true),
+    (11,    '{10,17,1}',        false)
+$$,                         'overflow splits rather than stealing');
 
 SELECT * FROM finish();
 ROLLBACK;
