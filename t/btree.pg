@@ -127,5 +127,22 @@ SELECT btree_is(11, 8, $$
     (11,    '{10,17,1}',        false)
 $$,                         'overflow splits rather than stealing');
 
+SELECT reset_btree(256);
+SELECT btree_is(1, 256, $$
+    (1,     '{}',               true)
+$$,                         'initial btree (order 256)');
+
+SELECT perform(insert(null)) FROM generate_series(1,255);
+SELECT bag_eq(
+    $$ SELECT id FROM btree $$,
+    $$ VALUES (0), (1) $$,
+    'order-256 btree will take 255 values without splitting');
+
+SELECT perform(insert(null));
+SELECT bag_eq(
+    $$ SELECT id FROM btree $$,
+    $$ VALUES (0), (1), (258), (259) $$,
+    'order-256 btree splits at 256 entries');
+
 SELECT * FROM finish();
 ROLLBACK;

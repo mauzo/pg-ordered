@@ -292,12 +292,12 @@ CREATE FUNCTION insert(
             n.ks := n.ks[1:n.ix-1] || k || n.ks[n.ix:n.nk];
             n    := reset(n);
 
-            IF n.nk < 8 THEN
+            IF n.nk < m.fill THEN
                 PERFORM update(n);
             ELSE
-                s.ks    := n.ks[1:4];
+                s.ks    := n.ks[1:m.fill/2];
                 s.leaf  := n.leaf;
-                n.ks    := n.ks[5:8];
+                n.ks    := n.ks[(m.fill/2 + 1):m.fill];
 
                 s := update(s);
                 n := update(n);
